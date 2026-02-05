@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>ABC Abejas - Interfaz Intuitiva</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    .row { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; }
+    canvas { border:1px solid #333; background:#fff; border-radius: 10px; }
+    .panel { width: 340px; padding: 14px; border:1px solid #ddd; border-radius: 12px; }
+    .card { padding: 10px; border:1px solid #eee; border-radius: 12px; margin-top: 12px; }
+    label { display:block; margin-top:10px; font-size: 14px; }
+    button { margin-top:10px; margin-right:8px; }
+    .small { color:#333; font-size: 13px; line-height: 1.35; }
+    .kpi { font-size: 14px; margin: 6px 0; }
+    .progressWrap { width:100%; background:#f0f0f0; border-radius: 10px; overflow:hidden; height: 14px; }
+    .progressBar { height: 14px; width: 0%; background: #2e7d32; }
+    .hint { color:#666; font-size:12px; margin-top:6px; }
+    .badge { display:inline-block; padding: 2px 8px; border-radius: 999px; background:#f6f6f6; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h2>Artificial Bee Colony (ABC) — Visualización web (personalizada)</h2>
+
+  <div class="row">
+    <canvas id="cv" width="820" height="520"></canvas>
+
+    <div class="panel">
+      <div class="card">
+        <div class="kpi"><b>Nivel de optimalidad:</b> <span id="optText" class="badge">0%</span></div>
+        <div class="progressWrap"><div id="optBar" class="progressBar"></div></div>
+        <div class="hint">Sube cuando muchas abejas están cerca de la mejor fuente. Baja cuando cambias el entorno.</div>
+
+        <div class="kpi">🟢 <b>Mejor fuente (q_best):</b> <span id="qBest">-</span></div>
+        <div class="kpi">🐝 <b>% abejas en mejor fuente:</b> <span id="pctBest">-</span></div>
+        <div class="kpi">⏱️ <b>Tiempo de adaptación:</b> <span id="adaptTime">—</span></div>
+      </div>
+
+      <div class="card">
+        <label>Abejas: <span id="nVal"></span>
+          <input id="n" type="range" min="20" max="400" value="180">
+        </label>
+
+        <label>Exploración (curiosidad): <span id="xVal"></span>
+          <input id="x" type="range" min="0" max="100" value="18">
+        </label>
+
+        <label>Velocidad: <span id="vVal"></span>
+          <input id="v" type="range" min="1" max="20" value="7">
+        </label>
+
+        <label>Persistencia (abandono lento): <span id="pVal"></span>
+          <input id="p" type="range" min="1" max="100" value="55">
+        </label>
+
+        <button id="moveBest">Mover mejor fuente</button>
+        <button id="degradeBest">Degradar mejor fuente</button>
+        <button id="reset">Reset</button>
+
+        <p class="small">
+          <b>Qué estás viendo:</b><br>
+          1) Círculos verdes = fuentes (soluciones). El texto q=... es su calidad.<br>
+          2) Puntos naranjas = abejas (agentes).<br>
+          3) Si el sistema está “bien”, muchas abejas se concentran en la fuente con mayor q.<br>
+          4) Si cambias el entorno, la barra baja y luego sube cuando se adaptan.
+        </p>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+
+  const n = document.getElementById("n");
+  const x = document.getElementById("x");
+  const v = document.getElementById("v");
+  const p = document.getElementById("p");
+
+  const nVal = document.getElementById("nVal");
+  const xVal = document.getElementById("xVal");
+  const vVal = document.getElementById("vVal");
+  const pVal = document.getElementById("pVal");
+
+  const optText = document.getElementById("optText");
+  const optBar = document.getElementById("optBar");
+  const qBestEl = document.getElementById("qBest");
+  const pctBestEl = document.getElementById("pctBest");
+  const adaptTimeEl = document.getElementById("adaptTime");
+
+  let bees = [];
+  let sources = [];
+  let bestIdx = 0;
+
+  // adaptación: medimos cuánto tarda en volver a >= 80%
+  let adaptStart = null;
+  let lastOpt = 0;
+
+  function syncLabels(){
+    nVal.textContent = n.value;
+    xVal.textContent = (x.value/100).toFixed(2);
+    vVal.textContent = v.value;
+    pVal.textContent = (p.value/100).toFixed(2);
+  }
+
+  function makeSources(){
+    sources = [];
+    for(let i=0;i<6;i++){
+      sources.push({
+        x: 60 + Math.random()*(cv.width-120),
+        y: 60 + Math.random()*(cv.height-120),
+        quality: 0.25 + Math.random()*0.75 // 0..1
+      });
+    }
+    recomputeBest();
+  }
+
+  function recomputeBest(){
+    bestIdx = 0;
+    for(let i=1;i<sources.length;i++){
+      if(sources[i].quality > sources[bestIdx].quality) bestIdx = i;
+    }
+  }
+
+  function makeBees(){
+    const N = parseInt(n.value,10);
+    bees = [];
+    for(let i=0;i<N;i++){
+      bees.push({
+        x: cv.width/2 + (Math.random()-0.5)*20,
+        y: cv.height/2 + (Math.random()-0.5)*20,
+        target: bestIdx,
+        inertia: 0
+      });
+    }
+  }
+
+  function init(){
+    makeSources();
+    makeBees();
+    adaptStart = null;
+    lastOpt = 0;
+    adaptTimeEl.textContent = "—";
+    syncLabels();
+  }
+
+  function pickTarget(){
+    // selección proporcional a calidad (observadoras)
+    const q = sources.map(s => s.quality + 1e-6);
+    const sum = q.reduce((a,b)=>a+b,0);
+    let r = Math.random()*sum;
+    for(let i=0;i<q.length;i++){
+      r -= q[i];
+      if(r <= 0) return i;
+    }
+    return q.length-1;
+  }
+
+  function step(){
+    const explore = parseFloat(x.value)/100;
+    const speed = parseInt(v.value,10);
+    const persist = parseFloat(p.value)/100;
+
+    for(const b of bees){
+      if(Math.random() < explore){
+        b.target = Math.floor(Math.random()*sources.length);
+        b.inertia = 0;
+      } else {
+        if(Math.random() > persist || b.inertia < 5){
+          b.target = pickTarget();
+          b.inertia += 1;
+        }
+      }
+
+      const t = sources[b.target];
+      const dx = t.x - b.x;
+      const dy = t.y - b.y;
+      const dist = Math.sqrt(dx*dx + dy*dy) + 1e-6;
+
+      b.x += (dx/dist) * speed * 0.35;
+      b.y += (dy/dist) * speed * 0.35;
+
+      // ruido pequeño
+      b.x += (Math.random()-0.5)*0.6;
+      b.y += (Math.random()-0.5)*0.6;
+
+      b.x = Math.max(0, Math.min(cv.width, b.x));
+      b.y = Math.max(0, Math.min(cv.height, b.y));
+    }
+  }
+
+  function computeMetrics(){
+    const qBest = sources[bestIdx].quality;
+    // cuántas abejas están “cerca” de la mejor fuente
+    const bx = sources[bestIdx].x, by = sources[bestIdx].y;
+    const radius = 35; // zona de influencia
+    let count = 0;
+    for(const b of bees){
+      const dx = b.x - bx, dy = b.y - by;
+      if(dx*dx + dy*dy <= radius*radius) count++;
+    }
+    const pct = (count / bees.length);
+
+    // “Optimalidad” = mezcla simple (calidad + concentración)
+    // 60% concentración, 40% calidad
+    const opt = (0.6*pct + 0.4*qBest) * 100;
+
+    return { qBest, pct, opt };
+  }
+
+  function updateUI(m){
+    qBestEl.textContent = m.qBest.toFixed(2);
+    pctBestEl.textContent = (m.pct*100).toFixed(1) + "%";
+
+    const optPct = Math.max(0, Math.min(100, m.opt));
+    optText.textContent = optPct.toFixed(0) + "%";
+    optBar.style.width = optPct + "%";
+
+    // lógica de tiempo de adaptación:
+    // si cae fuerte y luego vuelve a >=80, medimos tiempo
+    const now = performance.now();
+
+    // detecta inicio de “evento” (bajada)
+    if(optPct < 60 && lastOpt >= 80 && adaptStart === null){
+      adaptStart = now;
+      adaptTimeEl.textContent = "adaptando...";
+    }
+
+    // detecta fin (recupera)
+    if(adaptStart !== null && optPct >= 80){
+      const secs = (now - adaptStart) / 1000;
+      adaptTimeEl.textContent = secs.toFixed(1) + " s";
+      adaptStart = null;
+    }
+
+    lastOpt = optPct;
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,cv.width,cv.height);
+
+    // fuentes
+    for(let i=0;i<sources.length;i++){
+      const s = sources[i];
+      const r = 10 + s.quality*18;
+      const isBest = (i===bestIdx);
+
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r, 0, Math.PI*2);
+      ctx.fillStyle = isBest ? "rgba(0, 150, 0, 0.35)" : "rgba(0, 180, 0, 0.18)";
+      ctx.fill();
+      ctx.strokeStyle = isBest ? "rgba(0,120,0,0.95)" : "rgba(0,120,0,0.35)";
+      ctx.lineWidth = isBest ? 2 : 1;
+      ctx.stroke();
+
+      ctx.fillStyle = "#0b3";
+      ctx.font = "12px Arial";
+      ctx.fillText(`q=${s.quality.toFixed(2)}`, s.x - 16, s.y + 4);
+    }
+
+    // abejas
+    ctx.fillStyle = "rgba(255, 170, 0, 0.85)";
+    for(const b of bees){
+      ctx.fillRect(b.x-1.5, b.y-1.5, 3, 3);
+    }
+
+    // título
+    ctx.fillStyle = "#111";
+    ctx.font = "14px Arial";
+    ctx.fillText("Meta: concentrarse en la mejor fuente. Cambia el entorno y observa la adaptación.", 12, 20);
+  }
+
+  function loop(){
+    // Ajustar número de abejas
+    const targetN = parseInt(n.value,10);
+    if(bees.length !== targetN) makeBees();
+
+    for(let i=0;i<2;i++) step();
+
+    // recalcular mejor (por si degradan)
+    recomputeBest();
+
+    const m = computeMetrics();
+    updateUI(m);
+
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  document.getElementById("moveBest").onclick = () => {
+    // mover la mejor fuente: evento de adaptación
+    sources[bestIdx].x = 60 + Math.random()*(cv.width-120);
+    sources[bestIdx].y = 60 + Math.random()*(cv.height-120);
+    // al mover, fuerza medición de adaptación
+    adaptStart = performance.now();
+    adaptTimeEl.textContent = "adaptando...";
+  };
+
+  document.getElementById("degradeBest").onclick = () => {
+    // degradar: otra fuente puede volverse la mejor
+    sources[bestIdx].quality = Math.max(0.05, sources[bestIdx].quality - 0.45);
+    adaptStart = performance.now();
+    adaptTimeEl.textContent = "adaptando...";
+  };
+
+  document.getElementById("reset").onclick = init;
+
+  [n,x,v,p].forEach(el => el.addEventListener("input", syncLabels));
+
+  init();
+  loop();
+})();
+</script>
+</body>
+</html>
