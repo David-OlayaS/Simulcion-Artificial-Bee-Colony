@@ -1,4 +1,4 @@
-<!doctype html>
+<!--<!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8" />
@@ -309,6 +309,297 @@
   [n,x,v,p].forEach(el => el.addEventListener("input", syncLabels));
 
   init();
+  loop();
+})();
+</script>
+</body>
+</html>
+-->
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Abejas + Aprendizaje Asociativo (Interactivo)</title>
+  <style>
+    body{font-family:Arial,sans-serif;margin:16px}
+    .row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+    canvas{border:1px solid #333;border-radius:12px;background:#fff}
+    .panel{width:380px;padding:14px;border:1px solid #ddd;border-radius:12px}
+    .card{padding:10px;border:1px solid #eee;border-radius:12px;margin-top:12px}
+    button{margin:6px 6px 0 0}
+    label{display:block;margin-top:8px;font-size:14px}
+    .kpi{margin:6px 0}
+    .barWrap{width:100%;background:#f0f0f0;border-radius:10px;overflow:hidden;height:14px}
+    .bar{height:14px;width:0%}
+    .small{font-size:13px;line-height:1.35;color:#333}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#f6f6f6;font-size:12px}
+  </style>
+</head>
+<body>
+  <h2>Abejas (forrajeo) + Reglas de asociación (Rescorla–Wagner)</h2>
+
+  <div class="row">
+    <canvas id="cv" width="820" height="520"></canvas>
+
+    <div class="panel">
+      <div class="card">
+        <div class="kpi"><b>Aprendizaje (V)</b></div>
+        <div class="kpi">V(CS1 flor A): <b><span id="v1">0.00</span></b></div>
+        <div class="barWrap"><div id="b1" class="bar" style="background:#2e7d32"></div></div>
+        <div class="kpi" style="margin-top:10px">V(CS2 flor B): <b><span id="v2">0.00</span></b></div>
+        <div class="barWrap"><div id="b2" class="bar" style="background:#1565c0"></div></div>
+
+        <div class="kpi" style="margin-top:10px">Flor recompensada: <b><span id="rewarded" class="badge">CS1</span></b></div>
+        <div class="kpi">Visitas últimos 5s → A: <b><span id="visA">0</span></b> | B: <b><span id="visB">0</span></b></div>
+      </div>
+
+      <div class="card">
+        <div class="kpi"><b>Controles</b></div>
+        <button id="toggle">Pausar</button>
+        <button id="switch">Cambiar recompensa (reversión)</button>
+        <button id="ext">Extinción (sin azúcar)</button>
+        <button id="reset">Reset</button>
+
+        <label>Número de abejas: <span id="nVal"></span>
+          <input id="n" type="range" min="20" max="400" value="180">
+        </label>
+
+        <label>Exploración (azar): <span id="epsVal"></span>
+          <input id="eps" type="range" min="0" max="100" value="12">
+        </label>
+
+        <label>Prob. de recompensa (ruido): <span id="pVal"></span>
+          <input id="p" type="range" min="0" max="100" value="90">
+        </label>
+
+        <label>Velocidad: <span id="spdVal"></span>
+          <input id="spd" type="range" min="1" max="20" value="8">
+        </label>
+
+        <p class="small">
+          <b>Qué se ve:</b> abejas eligen entre dos flores/olores (CS1 y CS2).
+          Si una flor da azúcar (US), su asociación V sube y el enjambre la prefiere.
+          Al cambiar o quitar azúcar, el sistema se adapta.
+        </p>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+
+  // RW parámetros
+  const alpha = 0.25, beta = 0.40, lambdaMax = 1.0;
+
+  // UI
+  const el = id => document.getElementById(id);
+  const n = el("n"), eps = el("eps"), p = el("p"), spd = el("spd");
+  const nVal = el("nVal"), epsVal = el("epsVal"), pVal = el("pVal"), spdVal = el("spdVal");
+  const v1El = el("v1"), v2El = el("v2"), b1 = el("b1"), b2 = el("b2");
+  const rewardedEl = el("rewarded"), visAEl = el("visA"), visBEl = el("visB");
+
+  function sync(){
+    nVal.textContent = n.value;
+    epsVal.textContent = (eps.value/100).toFixed(2);
+    pVal.textContent = (p.value/100).toFixed(2);
+    spdVal.textContent = spd.value;
+  }
+  [n,eps,p,spd].forEach(x=>x.addEventListener("input", sync));
+
+  // Mundo
+  const flowerA = {x: 210, y: 260, r: 55, label:"CS1", color:"#2e7d32"};
+  const flowerB = {x: 610, y: 260, r: 55, label:"CS2", color:"#1565c0"};
+  const hive    = {x: 410, y: 470, r: 28};
+
+  let bees = [];
+  let running = true;
+
+  // Estado aprendizaje
+  let V1 = 0.0, V2 = 0.0;
+  let rewarded = 1; // 1=CS1, 2=CS2, 0=extinción global (nadie da azúcar)
+  let visitsA = 0, visitsB = 0;
+
+  // Ventana de conteo (últimos 5 segundos aprox)
+  let visWindowA = 0, visWindowB = 0, visWindowTicks = 0;
+
+  function softmaxChoice(v1, v2, temperature=0.25){
+    // mayor V => mayor probabilidad
+    const a = Math.exp(v1/temperature);
+    const b = Math.exp(v2/temperature);
+    const pa = a/(a+b);
+    return (Math.random() < pa) ? 1 : 2;
+  }
+
+  function reset(){
+    V1 = 0; V2 = 0;
+    rewarded = 1;
+    visitsA = 0; visitsB = 0;
+    visWindowA = 0; visWindowB = 0; visWindowTicks = 0;
+
+    const N = parseInt(n.value,10);
+    bees = [];
+    for(let i=0;i<N;i++){
+      bees.push({
+        x: hive.x + (Math.random()-0.5)*30,
+        y: hive.y + (Math.random()-0.5)*30,
+        target: (Math.random()<0.5?1:2),
+        state: "go",  // go -> feed -> return
+        t: 0
+      });
+    }
+    sync();
+    updateUI();
+  }
+
+  function updateUI(){
+    v1El.textContent = V1.toFixed(2);
+    v2El.textContent = V2.toFixed(2);
+    b1.style.width = (Math.max(0,Math.min(1,V1))*100)+"%";
+    b2.style.width = (Math.max(0,Math.min(1,V2))*100)+"%";
+
+    rewardedEl.textContent = rewarded===1 ? "CS1" : rewarded===2 ? "CS2" : "NINGUNA";
+    visAEl.textContent = visWindowA;
+    visBEl.textContent = visWindowB;
+  }
+
+  function rwUpdate(cs, us){
+    const lam = us ? lambdaMax : 0.0;
+    if(cs===1){
+      V1 += alpha*beta*(lam - V1);
+    } else {
+      V2 += alpha*beta*(lam - V2);
+    }
+    V1 = Math.max(-1, Math.min(1, V1));
+    V2 = Math.max(-1, Math.min(1, V2));
+  }
+
+  function step(){
+    // ajustar cantidad de abejas si cambió slider
+    const targetN = parseInt(n.value,10);
+    if(bees.length !== targetN){
+      const cur = bees.length;
+      if(targetN > cur){
+        for(let i=0;i<targetN-cur;i++){
+          bees.push({x:hive.x,y:hive.y,target:1,state:"go",t:0});
+        }
+      } else {
+        bees = bees.slice(0,targetN);
+      }
+    }
+
+    const explore = parseFloat(eps.value)/100;
+    const rewardProb = parseFloat(p.value)/100;
+    const speed = parseInt(spd.value,10) * 0.55;
+
+    // Ventana de 5s aprox (300 frames a 60fps, aquí usamos ticks)
+    visWindowTicks++;
+    if(visWindowTicks >= 300){
+      visWindowA = 0; visWindowB = 0; visWindowTicks = 0;
+    }
+
+    for(const b of bees){
+      // elegir target (decisión)
+      if(b.state === "go"){
+        // a veces explora aleatorio
+        if(Math.random() < explore) b.target = (Math.random()<0.5?1:2);
+        else b.target = softmaxChoice(V1, V2);
+
+        const t = (b.target===1)?flowerA:flowerB;
+        const dx = t.x - b.x, dy = t.y - b.y;
+        const dist = Math.sqrt(dx*dx+dy*dy)+1e-6;
+        b.x += (dx/dist)*speed + (Math.random()-0.5)*0.7;
+        b.y += (dy/dist)*speed + (Math.random()-0.5)*0.7;
+
+        // llegada a flor
+        if(dist < t.r){
+          b.state = "feed";
+          b.t = 0;
+
+          // evento de "experiencia": ¿hubo azúcar?
+          const cs = b.target;
+          const isRewarded = (rewarded===cs);
+          const us = (rewarded===0) ? 0 : (isRewarded && Math.random()<rewardProb ? 1 : 0);
+
+          rwUpdate(cs, us);
+
+          // contar visitas
+          if(cs===1){ visitsA++; visWindowA++; }
+          else { visitsB++; visWindowB++; }
+        }
+      }
+      else if(b.state === "feed"){
+        b.t++;
+        // pequeño “vibrar” en flor
+        b.x += (Math.random()-0.5)*0.8;
+        b.y += (Math.random()-0.5)*0.8;
+        if(b.t > 18) b.state = "return";
+      }
+      else {
+        // regresar a colmena
+        const dx = hive.x - b.x, dy = hive.y - b.y;
+        const dist = Math.sqrt(dx*dx+dy*dy)+1e-6;
+        b.x += (dx/dist)*speed + (Math.random()-0.5)*0.5;
+        b.y += (dy/dist)*speed + (Math.random()-0.5)*0.5;
+        if(dist < hive.r) b.state = "go";
+      }
+
+      // límites
+      b.x = Math.max(0, Math.min(cv.width, b.x));
+      b.y = Math.max(0, Math.min(cv.height, b.y));
+    }
+
+    updateUI();
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,cv.width,cv.height);
+
+    // colmena
+    ctx.fillStyle="rgba(255, 204, 102, 0.35)";
+    ctx.beginPath(); ctx.arc(hive.x,hive.y,hive.r,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle="rgba(120,80,0,0.8)"; ctx.stroke();
+    ctx.fillStyle="#6b4b00"; ctx.fillText("Colmena", hive.x-22, hive.y+4);
+
+    // flores
+    function flower(f){
+      ctx.fillStyle = f.label==="CS1" ? "rgba(46,125,50,0.22)" : "rgba(21,101,192,0.22)";
+      ctx.beginPath(); ctx.arc(f.x,f.y,f.r,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle = f.color; ctx.lineWidth=2; ctx.stroke();
+      ctx.fillStyle=f.color; ctx.fillText(f.label, f.x-14, f.y+4);
+      // indicador de recompensa
+      const isR = (rewarded=== (f.label==="CS1"?1:2));
+      ctx.fillStyle = isR ? "rgba(255,215,0,0.9)" : "rgba(0,0,0,0.2)";
+      ctx.beginPath(); ctx.arc(f.x+f.r-10, f.y-f.r+10, 6, 0, Math.PI*2); ctx.fill();
+    }
+    flower(flowerA); flower(flowerB);
+
+    // abejas
+    ctx.fillStyle="rgba(255,170,0,0.9)";
+    for(const b of bees) ctx.fillRect(b.x-2,b.y-2,4,4);
+
+    // texto
+    ctx.fillStyle="#111"; ctx.font="14px Arial";
+    ctx.fillText("Idea: las abejas aprenden por asociación qué flor (olor) da azúcar.", 12, 20);
+    ctx.font="12px Arial";
+    ctx.fillText("Prueba: cambia la recompensa o activa extinción y observa cómo cambia el patrón de visitas.", 12, 40);
+  }
+
+  function loop(){
+    if(running){
+      for(let i=0;i<2;i++) step();
+    }
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  el("toggle").onclick = () => { running = !running; el("toggle").textContent = running ? "Pausar" : "Continuar"; };
+  el("switch").onclick = () => { rewarded = (rewarded===1?2:1); };
+  el("ext").onclick = () => { rewarded = 0; };
+  el("reset").onclick = reset;
+
+  reset();
   loop();
 })();
 </script>
