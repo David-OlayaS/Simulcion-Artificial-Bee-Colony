@@ -615,45 +615,61 @@
 <html lang="es">
 <head>
 <meta charset="utf-8"/>
-<title>Danza solar de abejas (simulación corregida)</title>
+<title>Colmena + Danza solar (modelo mejorado)</title>
 <style>
   body{font-family:Arial;margin:16px}
   .row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
   canvas{border:1px solid #333;border-radius:12px;background:#fff}
-  .panel{width:420px;border:1px solid #ddd;border-radius:12px;padding:14px}
+  .panel{width:440px;border:1px solid #ddd;border-radius:12px;padding:14px}
   label{display:block;margin-top:10px}
   .kpi{margin:6px 0}
   button{margin-top:10px;margin-right:8px}
+  .barWrap{width:100%;background:#f0f0f0;border-radius:10px;overflow:hidden;height:12px}
+  .bar{height:12px;width:0%}
 </style>
 </head>
 <body>
-<h2>Simulación: danza solar + exploración real + reclutamiento (con ruido)</h2>
+<h2>Colmena bioinspirada: scouts → danza solar → reclutamiento (ruido/mentiras/velocidad)</h2>
 
 <div class="row">
   <canvas id="cv" width="820" height="520"></canvas>
+
   <div class="panel">
-    <div class="kpi"><b>Cómo funciona:</b> Scouts exploran, descubren fuentes y generan danzas. Reclutas siguen la danza (con ruido).</div>
+    <div class="kpi"><b>Lectura rápida:</b> Colores = a qué fuente van (A verde, B azul, C morado, gris = perdida).</div>
 
-    <label>Exploración (proporción scouts): <span id="eVal"></span>
-      <input id="explore" type="range" min="0" max="100" value="25">
+    <label>Exploración (% scouts): <span id="eVal"></span>
+      <input id="explore" type="range" min="0" max="100" value="20">
     </label>
-
     <label>Ruido angular (danza): <span id="nVal"></span>
-      <input id="noise" type="range" min="0" max="100" value="12">
+      <input id="noise" type="range" min="0" max="100" value="10">
     </label>
-
     <label>Mensajes falsos (mentira): <span id="lVal"></span>
       <input id="liar" type="range" min="0" max="100" value="5">
+    </label>
+    <label>Velocidad: <span id="sVal"></span>
+      <input id="speed" type="range" min="1" max="20" value="8">
     </label>
 
     <button id="switch">Cambiar mejor fuente</button>
     <button id="reset">Reset</button>
 
-    <div class="kpi">Mejor fuente actual: <b><span id="best">A</span></b></div>
-    <div class="kpi">Visitas (últimos ~5s) → A: <b><span id="va">0</span></b> B: <b><span id="vb">0</span></b> C: <b><span id="vc">0</span></b></div>
-    <div class="kpi">Proporción hacia mejor (últimos ~5s): <b><span id="frac">0%</span></b></div>
+    <hr>
 
-    <div class="kpi"><b>Tip rápido:</b> sube ruido a 0.80 y verás caer la proporción hacia la mejor fuente.</div>
+    <div class="kpi">Mejor fuente actual: <b><span id="best">A</span></b></div>
+    <div class="kpi">En colmena: <b><span id="inHive">0</span></b> | Perdidas: <b><span id="lost">0</span></b></div>
+
+    <div class="kpi">Llegadas últimas ~5s → A: <b><span id="a5">0</span></b> B: <b><span id="b5">0</span></b> C: <b><span id="c5">0</span></b></div>
+
+    <div class="kpi">Éxito hacia mejor (últimos ~5s): <b><span id="succ">0%</span></b></div>
+    <div class="barWrap"><div id="succBar" class="bar" style="background:#2e7d32"></div></div>
+
+    <div class="kpi" style="margin-top:10px">Precisión de danza (targets cerca de fuente): <b><span id="acc">0%</span></b></div>
+    <div class="barWrap"><div id="accBar" class="bar" style="background:#1565c0"></div></div>
+
+    <div class="kpi" style="margin-top:10px">
+      <b>Tip:</b> pon Exploración 0.10, Ruido 0.00, Mentiras 0.00 → consenso fuerte.  
+      Luego Ruido 0.80 o Mentiras 0.80 → baja el éxito y la precisión.
+    </div>
   </div>
 </div>
 
@@ -666,32 +682,35 @@
   const explore = el("explore");
   const noise = el("noise");
   const liar = el("liar");
-  const eVal = el("eVal"), nVal = el("nVal"), lVal = el("lVal");
+  const speed = el("speed");
+  const eVal = el("eVal"), nVal = el("nVal"), lVal = el("lVal"), sVal = el("sVal");
 
   function sync(){
     eVal.textContent = (explore.value/100).toFixed(2);
     nVal.textContent = (noise.value/100).toFixed(2);
     lVal.textContent = (liar.value/100).toFixed(2);
+    sVal.textContent = speed.value;
   }
-  [explore, noise, liar].forEach(x => x.addEventListener("input", sync));
+  [explore, noise, liar, speed].forEach(x => x.addEventListener("input", sync));
 
-  // -------- utilidades
   function wrap(a){ return (a+Math.PI)%(2*Math.PI)-Math.PI; }
   function ang(dx,dy){ return Math.atan2(dy, dx); }
   function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 
-  // -------- mundo
+  // Mundo
   const hive = {x: 410, y: 420};
   const hiveR = 22;
 
   let sources = [
-    {name:"A", x: 200, y: 200, q:0.95},
-    {name:"B", x: 620, y: 210, q:0.70},
-    {name:"C", x: 430, y: 120, q:0.55},
+    {name:"A", x: 200, y: 200, q:0.95, color:"#2e7d32"},
+    {name:"B", x: 620, y: 210, q:0.70, color:"#1565c0"},
+    {name:"C", x: 430, y: 120, q:0.55, color:"#6a1b9a"},
   ];
-  const baseR = 18;
-  let bestIdx = 0;
 
+  const rrVisualBase = 18;     // solo para dibujar
+  const rrReward = 10;         // zona REAL de recompensa (estricta)
+
+  let bestIdx = 0;
   function recomputeBest(){
     bestIdx = 0;
     for(let i=1;i<sources.length;i++){
@@ -700,52 +719,56 @@
     el("best").textContent = sources[bestIdx].name;
   }
 
-  // -------- sol
+  // Sol
   let sun = -Math.PI/2;
   const sunSpeed = 0.006;
 
-  // -------- memoria de danzas (solo de scouts que encontraron)
-  let dances = []; // {thetaRel, dist, qRep, t}
+  // Danzas (mensajes)
+  let dances = []; // {sourceIdx, thetaRel, dist, qRep, t}
   const danceTTL = 240;
 
-  // -------- abejas
-  const N = 220;
+  // Abejas
+  const N = 260;
   let bees = [];
 
-  // ventana visitas
-  let winTicks = 0, winA=0, winB=0, winC=0;
+  // KPIs ventana ~5s
+  let winTicks = 0;
+  let a5=0, b5=0, c5=0;
+  let correctTargets=0, totalTargets=0;
 
-  // tiempo
   let t = 0;
 
-  function scoutWander(b){
-    b.tx = clamp(b.tx + (Math.random()-0.5)*160, 20, cv.width-20);
-    b.ty = clamp(b.ty + (Math.random()-0.5)*160, 20, cv.height-20);
-  }
+  // Roles simplificados
+  // scoutFrac = % scouts
+  // el resto recruits
 
-  function encodeDance(source, sunAngle){
-    const dx = source.x - hive.x;
-    const dy = source.y - hive.y;
+  function encodeDance(sourceIdx){
+    const s = sources[sourceIdx];
+    const dx = s.x - hive.x;
+    const dy = s.y - hive.y;
     const theta = ang(dx,dy);
     const d = Math.sqrt(dx*dx + dy*dy);
 
-    let thetaRel = wrap(theta - sunAngle);
+    let thetaRel = wrap(theta - sun);
 
-    // ruido angular (hasta ~1 rad)
+    // ruido angular (afecta navegación)
     const noiseMag = (noise.value/100) * 1.0;
     thetaRel = wrap(thetaRel + (Math.random()-0.5)*2*noiseMag);
 
-    // mensaje falso
-    let qRep = source.q;
+    let qRep = s.q;
+
+    // mentira: cambia dirección a random y baja calidad reportada
     if(Math.random() < (liar.value/100)){
       thetaRel = wrap((Math.random()*2*Math.PI)-Math.PI);
-      qRep = Math.max(0.05, source.q*0.30);
+      qRep = Math.max(0.05, s.q*0.30);
+      // opcional: mentiroso puede incluso reportar otra fuente (dejamos solo dirección random)
     }
-    return {thetaRel, dist:d, qRep};
+
+    return {sourceIdx, thetaRel, dist:d, qRep, t};
   }
 
-  function decodeToPoint(msg, sunAngle){
-    const thetaHat = wrap(msg.thetaRel + sunAngle);
+  function decodeTarget(msg){
+    const thetaHat = wrap(msg.thetaRel + sun);
     const dHat = msg.dist;
     return {
       x: hive.x + dHat*Math.cos(thetaHat),
@@ -757,8 +780,8 @@
     if(dances.length===0) return null;
 
     // atención: score = qRep / (1 + edad)
-    let sum = 0;
-    const scores = dances.map(d => {
+    let sum=0;
+    const scores = dances.map(d=>{
       const age = t - d.t;
       const s = d.qRep / (1 + age/60);
       sum += s;
@@ -773,24 +796,34 @@
     return dances[dances.length-1];
   }
 
+  function scoutWander(b){
+    // objetivo aleatorio por segmentos (exploración real)
+    b.tx = clamp(b.tx + (Math.random()-0.5)*220, 20, cv.width-20);
+    b.ty = clamp(b.ty + (Math.random()-0.5)*220, 20, cv.height-20);
+  }
+
   function reset(){
-    t = 0;
+    t=0;
     sun = -Math.PI/2;
     dances = [];
-    winTicks = 0; winA=0; winB=0; winC=0;
+    winTicks=0; a5=0; b5=0; c5=0;
+    correctTargets=0; totalTargets=0;
+
     recomputeBest();
 
     bees = [];
     for(let i=0;i<N;i++){
       const b = {
-        x: hive.x + (Math.random()-0.5)*20,
-        y: hive.y + (Math.random()-0.5)*20,
+        x: hive.x + (Math.random()-0.5)*18,
+        y: hive.y + (Math.random()-0.5)*18,
         role: "scout",
-        state: "go",     // go / ret / dance
+        state: "IN_HIVE",   // IN_HIVE, TO_SEARCH, TO_TARGET, AT_SOURCE, RETURNING, DANCING
         tx: hive.x, ty: hive.y,
+        sourceColor: "#888", // gris
         carrying: -1,
         danceMsg: null,
-        danceT: 0
+        danceT: 0,
+        stuck: 0
       };
       scoutWander(b);
       bees.push(b);
@@ -805,127 +838,186 @@
     // limpiar danzas viejas
     dances = dances.filter(d => (t - d.t) <= danceTTL);
 
-    // número de scouts según slider
+    // ventana 5s
+    winTicks++;
+    if(winTicks >= 300){
+      winTicks=0; a5=0; b5=0; c5=0;
+      correctTargets=0; totalTargets=0;
+    }
+
     const scoutFrac = explore.value/100;
     const nScouts = Math.floor(N * scoutFrac);
 
-    // ventana ~5s
-    winTicks++;
-    if(winTicks >= 300){
-      winTicks = 0;
-      winA = winB = winC = 0;
-    }
+    const v = parseInt(speed.value,10) * 0.35; // factor de velocidad
 
-    const speed = 2.4;
+    // KPIs de estados
+    let inHive=0, lost=0;
 
     for(let i=0;i<bees.length;i++){
       const b = bees[i];
       b.role = (i < nScouts) ? "scout" : "recruit";
 
-      if(b.role === "scout"){
-        if(b.state === "go"){
-          if(Math.random() < 0.04) scoutWander(b);
+      // regla: todos pasan por colmena para “cohesión”
+      const dxH = hive.x - b.x, dyH = hive.y - b.y;
+      const dH2 = dxH*dxH + dyH*dyH;
 
-          const dx = b.tx - b.x, dy = b.ty - b.y;
-          const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
-          b.x += (dx/d)*speed + (Math.random()-0.5)*0.5;
-          b.y += (dy/d)*speed + (Math.random()-0.5)*0.5;
+      if(b.state === "IN_HIVE"){
+        inHive++;
 
-          // ¿tocó fuente?
-          for(let si=0; si<sources.length; si++){
-            const s = sources[si];
-            const rr = baseR + 20*s.q;
-            const ddx = s.x - b.x, ddy = s.y - b.y;
-            if(ddx*ddx + ddy*ddy < rr*rr){
-              b.carrying = si;
-              b.state = "ret";
-              b.tx = hive.x; b.ty = hive.y;
-              break;
-            }
-          }
-        } else if(b.state === "ret"){
-          const dx = hive.x - b.x, dy = hive.y - b.y;
-          const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
-          b.x += (dx/d)*speed + (Math.random()-0.5)*0.4;
-          b.y += (dy/d)*speed + (Math.random()-0.5)*0.4;
-
-          const ddx = hive.x - b.x, ddy = hive.y - b.y;
-          if(ddx*ddx + ddy*ddy < hiveR*hiveR && b.carrying >= 0){
-            b.state = "dance";
-            b.danceT = 0;
-            const msg = encodeDance(sources[b.carrying], sun);
-            dances.push({...msg, t});
-          }
+        // scouts salen a buscar, recruits esperan danza
+        if(b.role === "scout"){
+          b.state = "TO_SEARCH";
+          scoutWander(b);
         } else {
-          // dance
-          b.danceT++;
-          b.x += (Math.random()-0.5)*0.6;
-          b.y += (Math.random()-0.5)*0.6;
-          if(b.danceT > 20){
-            b.state = "go";
-            b.carrying = -1;
-            scoutWander(b);
-          }
-        }
-      } else {
-        // recruit
-        if(b.state === "go"){
-          if(b.danceMsg === null || Math.random() < 0.05){
-            b.danceMsg = pickDance();
-            if(b.danceMsg){
-              const pt = decodeToPoint(b.danceMsg, sun);
-              b.tx = clamp(pt.x, 20, cv.width-20);
-              b.ty = clamp(pt.y, 20, cv.height-20);
-            } else {
-              scoutWander(b);
-            }
-          }
+          // recruit intenta tomar danza
+          const msg = pickDance();
+          if(msg){
+            b.danceMsg = msg;
+            const pt = decodeTarget(msg);
+            b.tx = clamp(pt.x, 20, cv.width-20);
+            b.ty = clamp(pt.y, 20, cv.height-20);
 
-          const dx = b.tx - b.x, dy = b.ty - b.y;
-          const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
-          b.x += (dx/d)*speed + (Math.random()-0.5)*0.5;
-          b.y += (dy/d)*speed + (Math.random()-0.5)*0.5;
+            // KPI precisión de danza: target cerca de fuente real
+            totalTargets++;
+            const s = sources[msg.sourceIdx];
+            const dx = s.x - b.tx, dy = s.y - b.ty;
+            if(dx*dx + dy*dy < 25*25) correctTargets++;
 
-          // ¿llegó a fuente?
-          for(let si=0; si<sources.length; si++){
-            const s = sources[si];
-            const rr = baseR + 20*s.q;
-            const ddx = s.x - b.x, ddy = s.y - b.y;
-            if(ddx*ddx + ddy*ddy < rr*rr){
-              if(si===0) winA++;
-              if(si===1) winB++;
-              if(si===2) winC++;
-              b.state = "ret";
-              b.tx = hive.x; b.ty = hive.y;
-              break;
-            }
-          }
-        } else {
-          // return
-          const dx = hive.x - b.x, dy = hive.y - b.y;
-          const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
-          b.x += (dx/d)*speed + (Math.random()-0.5)*0.4;
-          b.y += (dy/d)*speed + (Math.random()-0.5)*0.4;
-
-          const ddx = hive.x - b.x, ddy = hive.y - b.y;
-          if(ddx*ddx + ddy*ddy < hiveR*hiveR){
-            b.state = "go";
-            b.danceMsg = null;
+            // color por fuente indicada
+            b.sourceColor = sources[msg.sourceIdx].color;
+            b.state = "TO_TARGET";
+          } else {
+            // sin mensajes: se queda esperando (realista)
+            b.x += (Math.random()-0.5)*0.3;
+            b.y += (Math.random()-0.5)*0.3;
           }
         }
       }
 
+      else if(b.state === "TO_SEARCH"){
+        // scout explorando
+        if(Math.random() < 0.04) scoutWander(b);
+
+        const dx = b.tx - b.x, dy = b.ty - b.y;
+        const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
+        b.x += (dx/d)*v + (Math.random()-0.5)*0.6;
+        b.y += (dy/d)*v + (Math.random()-0.5)*0.6;
+
+        // si encuentra fuente (zona de recompensa grande para detectar)
+        for(let si=0; si<sources.length; si++){
+          const s = sources[si];
+          const rrDetect = rrVisualBase + 20*s.q;
+          const ddx = s.x - b.x, ddy = s.y - b.y;
+          if(ddx*ddx + ddy*ddy < rrDetect*rrDetect){
+            b.carrying = si;
+            b.sourceColor = sources[si].color;
+            b.state = "RETURNING";
+            b.tx = hive.x; b.ty = hive.y;
+            break;
+          }
+        }
+      }
+
+      else if(b.state === "TO_TARGET"){
+        // recruit siguiendo un target decodificado
+        const dx = b.tx - b.x, dy = b.ty - b.y;
+        const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
+        b.x += (dx/d)*v + (Math.random()-0.5)*0.5;
+        b.y += (dy/d)*v + (Math.random()-0.5)*0.5;
+
+        // si llega a zona real de recompensa (pequeña)
+        let arrived = false;
+        for(let si=0; si<sources.length; si++){
+          const s = sources[si];
+          const ddx = s.x - b.x, ddy = s.y - b.y;
+          if(ddx*ddx + ddy*ddy < rrReward*rrReward){
+            // cuenta llegada real
+            if(si===0) a5++;
+            if(si===1) b5++;
+            if(si===2) c5++;
+            b.carrying = si;
+            b.state = "RETURNING";
+            b.tx = hive.x; b.ty = hive.y;
+            arrived = true;
+            break;
+          }
+        }
+
+        // si no llega en cierto tiempo, se considera “perdida” y regresa
+        b.stuck++;
+        if(!arrived && b.stuck > 220){
+          lost++;
+          b.state = "RETURNING";
+          b.tx = hive.x; b.ty = hive.y;
+          b.sourceColor = "#888";
+          b.danceMsg = null;
+          b.stuck = 0;
+        }
+      }
+
+      else if(b.state === "RETURNING"){
+        const dx = hive.x - b.x, dy = hive.y - b.y;
+        const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
+        b.x += (dx/d)*v + (Math.random()-0.5)*0.4;
+        b.y += (dy/d)*v + (Math.random()-0.5)*0.4;
+
+        if(dH2 < hiveR*hiveR){
+          // si es scout con carrying: baila
+          if(b.role==="scout" && b.carrying>=0){
+            b.state = "DANCING";
+            b.danceT = 0;
+
+            const msg = encodeDance(b.carrying);
+            dances.push(msg);
+          } else {
+            // recruit vuelve a esperar
+            b.state = "IN_HIVE";
+            b.danceMsg = null;
+            b.sourceColor = "#888";
+            b.carrying = -1;
+          }
+        }
+      }
+
+      else if(b.state === "DANCING"){
+        b.danceT++;
+        b.x += (Math.random()-0.5)*0.4;
+        b.y += (Math.random()-0.5)*0.4;
+
+        // mientras baila, puede reforzar más (replicación de mensaje)
+        if(b.danceT % 8 === 0 && b.carrying>=0){
+          dances.push(encodeDance(b.carrying));
+        }
+
+        if(b.danceT > 30){
+          b.state = "IN_HIVE";
+          b.carrying = -1;
+          b.sourceColor = "#888";
+        }
+      }
+
+      // límites
       b.x = clamp(b.x, 0, cv.width);
       b.y = clamp(b.y, 0, cv.height);
     }
 
-    // panel KPI
-    el("va").textContent = winA;
-    el("vb").textContent = winB;
-    el("vc").textContent = winC;
-    const bestVisits = (bestIdx===0?winA:(bestIdx===1?winB:winC));
-    const total = winA+winB+winC+1e-9;
-    el("frac").textContent = (bestVisits/total*100).toFixed(1) + "%";
+    // KPIs panel
+    el("inHive").textContent = inHive;
+    el("lost").textContent = lost;
+    el("a5").textContent = a5;
+    el("b5").textContent = b5;
+    el("c5").textContent = c5;
+
+    const totalArr = a5+b5+c5+1e-9;
+    const bestArr = (bestIdx===0?a5:(bestIdx===1?b5:c5));
+    const succ = (bestArr/totalArr)*100;
+
+    el("succ").textContent = succ.toFixed(1) + "%";
+    el("succBar").style.width = clamp(succ,0,100) + "%";
+
+    const acc = (correctTargets/(totalTargets+1e-9))*100;
+    el("acc").textContent = acc.toFixed(1) + "%";
+    el("accBar").style.width = clamp(acc,0,100) + "%";
   }
 
   function draw(){
@@ -940,7 +1032,6 @@
     ctx.moveTo(sunPos.x, sunPos.y);
     ctx.lineTo(sunPos.x + 40*Math.cos(sun), sunPos.y + 40*Math.sin(sun));
     ctx.stroke();
-
     ctx.fillStyle="#111";
     ctx.fillText("Sol (referencia)", 20, 105);
 
@@ -949,26 +1040,31 @@
     ctx.beginPath(); ctx.arc(hive.x,hive.y,hiveR,0,Math.PI*2); ctx.fill();
     ctx.strokeStyle="rgba(120,80,0,0.8)"; ctx.stroke();
     ctx.fillStyle="#6b4b00";
-    ctx.fillText("Colmena", hive.x-22, hive.y+38);
+    ctx.fillText("Colmena", hive.x-24, hive.y+38);
 
     // fuentes
     for(let i=0;i<sources.length;i++){
       const s = sources[i];
-      const rr = baseR + 20*s.q;
-      ctx.fillStyle = i===bestIdx ? "rgba(0,150,0,0.30)" : "rgba(0,150,0,0.15)";
-      ctx.beginPath(); ctx.arc(s.x,s.y,rr,0,Math.PI*2); ctx.fill();
-      ctx.strokeStyle = i===bestIdx ? "rgba(0,110,0,0.9)" : "rgba(0,110,0,0.35)";
+      const rrVisual = rrVisualBase + 20*s.q;
+      ctx.fillStyle = i===bestIdx ? "rgba(0,150,0,0.25)" : "rgba(0,150,0,0.12)";
+      ctx.beginPath(); ctx.arc(s.x,s.y,rrVisual,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle = (i===bestIdx) ? "rgba(0,110,0,0.9)" : "rgba(0,110,0,0.35)";
       ctx.stroke();
+
+      // zona real de recompensa (pequeña)
+      ctx.strokeStyle = "rgba(0,0,0,0.15)";
+      ctx.beginPath(); ctx.arc(s.x,s.y,rrReward,0,Math.PI*2); ctx.stroke();
+
       ctx.fillStyle="#0b3";
-      ctx.fillText(`${s.name} q=${s.q.toFixed(2)}`, s.x-28, s.y-rr-8);
+      ctx.fillText(`${s.name} q=${s.q.toFixed(2)}`, s.x-28, s.y-rrVisual-8);
     }
 
-    // flechas (danzas)
+    // flechas de danza (últimas) — decodificadas con el sol actual
     const recent = dances.slice(-10);
     for(const d of recent){
       const thetaHat = wrap(d.thetaRel + sun);
-      const len = 65 + d.qRep*60;
-      ctx.strokeStyle="rgba(180,0,180,0.45)";
+      const len = 55 + d.qRep*70;
+      ctx.strokeStyle="rgba(180,0,180,0.40)";
       ctx.beginPath();
       ctx.moveTo(hive.x, hive.y);
       ctx.lineTo(hive.x + len*Math.cos(thetaHat), hive.y + len*Math.sin(thetaHat));
@@ -976,29 +1072,28 @@
     }
 
     // abejas
-    ctx.fillStyle="rgba(255,170,0,0.9)";
     for(const b of bees){
+      ctx.fillStyle = b.sourceColor || "#888";
       ctx.fillRect(b.x-2,b.y-2,4,4);
     }
 
     ctx.fillStyle="#111";
-    ctx.fillText("Scouts exploran → si encuentran fuente, bailan → reclutas siguen danza (ruido afecta).", 12, 22);
+    ctx.fillText("Scouts exploran → vuelven → bailan → reclutan (ruido/mentiras bajan éxito y precisión).", 12, 22);
   }
 
   function loop(){
+    // más pasos por frame para que se note movimiento
     for(let k=0;k<2;k++) step();
     draw();
     requestAnimationFrame(loop);
   }
 
-  // Botones
   el("switch").onclick = () => {
     sources[bestIdx].q = Math.max(0.35, sources[bestIdx].q - 0.35);
     recomputeBest();
   };
   el("reset").onclick = reset;
 
-  // start
   reset();
   loop();
 })();
