@@ -314,7 +314,9 @@
 </script>
 </body>
 </html>
--->
+
+------------------------------------CODIGO 2--------------------------------------------
+
 <!doctype html>
 <html lang="es">
 <head>
@@ -600,6 +602,255 @@
   el("reset").onclick = reset;
 
   reset();
+  loop();
+})();
+</script>
+</body>
+</html>
+
+--------------------------------------------------- CODIGO 3 ----------------------------------------------------------
+-->
+
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8"/>
+<title>Danza solar de abejas (simulación)</title>
+<style>
+  body{font-family:Arial;margin:16px}
+  .row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+  canvas{border:1px solid #333;border-radius:12px;background:#fff}
+  .panel{width:380px;border:1px solid #ddd;border-radius:12px;padding:14px;border-radius:12px}
+  label{display:block;margin-top:10px}
+  .kpi{margin:6px 0}
+  button{margin-top:10px;margin-right:8px}
+</style>
+</head>
+<body>
+<h2>Simulación: danza solar (ángulo relativo al sol) + reclutamiento + ruido</h2>
+
+<div class="row">
+  <canvas id="cv" width="820" height="520"></canvas>
+  <div class="panel">
+    <div class="kpi"><b>Qué estás viendo:</b> la flecha de “danza” codifica dirección relativa al sol. Las abejas la siguen.</div>
+
+    <label>Exploración (azar): <span id="eVal"></span>
+      <input id="explore" type="range" min="0" max="100" value="18">
+    </label>
+    <label>Ruido angular: <span id="nVal"></span>
+      <input id="noise" type="range" min="0" max="100" value="10">
+    </label>
+    <label>Prob. mensaje falso: <span id="lVal"></span>
+      <input id="liar" type="range" min="0" max="100" value="5">
+    </label>
+
+    <button id="switch">Cambiar mejor fuente</button>
+    <button id="reset">Reset</button>
+
+    <div class="kpi">Mejor fuente actual: <b><span id="best">A</span></b></div>
+    <div class="kpi">Proporción hacia mejor fuente (aprox): <b><span id="frac">0</span></b></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const cv = document.getElementById("cv");
+  const ctx = cv.getContext("2d");
+  const el = id => document.getElementById(id);
+
+  const explore = el("explore");
+  const noise = el("noise");
+  const liar = el("liar");
+  const eVal = el("eVal"), nVal = el("nVal"), lVal = el("lVal");
+
+  function sync(){
+    eVal.textContent = (explore.value/100).toFixed(2);
+    nVal.textContent = (noise.value/100).toFixed(2);
+    lVal.textContent = (liar.value/100).toFixed(2);
+  }
+  [explore, noise, liar].forEach(x=>x.addEventListener("input", sync));
+
+  const hive = {x: 410, y: 420};
+  let sources = [
+    {name:"A", x: 200, y: 200, q:0.95},
+    {name:"B", x: 620, y: 210, q:0.70},
+    {name:"C", x: 430, y: 120, q:0.55},
+  ];
+  let bestIdx = 0;
+
+  let bees = [];
+  let memory = []; // {idx, thetaRel, d, qRep, t}
+  let t = 0;
+  let sun = -Math.PI/2;
+  const sunSpeed = 0.006;
+
+  function wrap(a){ return (a+Math.PI)%(2*Math.PI)-Math.PI; }
+  function ang(x,y){ return Math.atan2(y, x); }
+  function dist(x,y){ return Math.sqrt(x*x+y*y); }
+
+  function recomputeBest(){
+    bestIdx = 0;
+    for(let i=1;i<sources.length;i++){
+      if(sources[i].q > sources[bestIdx].q) bestIdx = i;
+    }
+  }
+
+  function init(){
+    t=0; sun=-Math.PI/2; memory=[];
+    recomputeBest();
+    bees = Array.from({length:180}, ()=>({
+      x:hive.x+(Math.random()-0.5)*20,
+      y:hive.y+(Math.random()-0.5)*20,
+      state:"go",
+      target:bestIdx
+    }));
+    sync();
+  }
+
+  function encode(idx){
+    const s = sources[idx];
+    const vx = s.x - hive.x, vy = s.y - hive.y;
+    const theta = ang(vx, vy);
+    const d = dist(vx, vy);
+
+    // danza: ángulo relativo al sol
+    let thetaRel = wrap(theta - sun);
+
+    // ruido angular
+    const noiseMag = (noise.value/100)*0.9; // escala
+    thetaRel = wrap(thetaRel + (Math.random()-0.5)*2*noiseMag);
+
+    // mensaje falso
+    let qRep = s.q;
+    if(Math.random() < (liar.value/100)){
+      thetaRel = wrap((Math.random()*2*Math.PI)-Math.PI);
+      qRep = Math.max(0.05, s.q*0.30);
+    }
+
+    memory.push({idx, thetaRel, d, qRep, t});
+    memory = memory.filter(m => t - m.t <= 180);
+  }
+
+  function chooseTarget(){
+    if(memory.length===0) return Math.floor(Math.random()*sources.length);
+
+    // atención: score = qRep / (1+edad)
+    const scores = memory.map(m => m.qRep / (1+(t-m.t)));
+    const sum = scores.reduce((a,b)=>a+b,0)+1e-9;
+    let r = Math.random()*sum;
+    for(let i=0;i<memory.length;i++){
+      r -= scores[i];
+      if(r<=0) return memory[i].idx;
+    }
+    return memory[memory.length-1].idx;
+  }
+
+  function step(){
+    t++;
+    sun = wrap(sun + sunSpeed);
+
+    // generar algunos mensajes por paso
+    for(let k=0;k<5;k++){
+      const idx = Math.floor(Math.random()*sources.length);
+      encode(idx);
+    }
+
+    const exp = explore.value/100;
+    const speed = 2.2;
+
+    let wentBest = 0;
+
+    for(const b of bees){
+      if(b.state==="go"){
+        b.target = (Math.random()<exp) ? Math.floor(Math.random()*sources.length) : chooseTarget();
+
+        const s = sources[b.target];
+        const dx = s.x - b.x, dy = s.y - b.y;
+        const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
+        b.x += (dx/d)*speed + (Math.random()-0.5)*0.6;
+        b.y += (dy/d)*speed + (Math.random()-0.5)*0.6;
+
+        if(d < 18) b.state="ret";
+      } else {
+        const dx = hive.x - b.x, dy = hive.y - b.y;
+        const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
+        b.x += (dx/d)*speed + (Math.random()-0.5)*0.4;
+        b.y += (dy/d)*speed + (Math.random()-0.5)*0.4;
+        if(d < 18) b.state="go";
+      }
+
+      if(b.target===bestIdx) wentBest++;
+    }
+
+    el("best").textContent = sources[bestIdx].name;
+    el("frac").textContent = (wentBest/bees.length*100).toFixed(1)+"%";
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,cv.width,cv.height);
+
+    // sol
+    const sunPos = {x: 70, y: 70};
+    ctx.fillStyle="#ffcc00";
+    ctx.beginPath(); ctx.arc(sunPos.x,sunPos.y,18,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle="#aa8800"; ctx.stroke();
+    ctx.strokeStyle="#aa8800";
+    ctx.beginPath();
+    ctx.moveTo(sunPos.x, sunPos.y);
+    ctx.lineTo(sunPos.x + 40*Math.cos(sun), sunPos.y + 40*Math.sin(sun));
+    ctx.stroke();
+    ctx.fillStyle="#111"; ctx.fillText("Sol (referencia)", 20, 105);
+
+    // colmena
+    ctx.fillStyle="rgba(255,200,120,0.35)";
+    ctx.beginPath(); ctx.arc(hive.x,hive.y,22,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle="rgba(120,80,0,0.8)"; ctx.stroke();
+    ctx.fillStyle="#6b4b00"; ctx.fillText("Colmena", hive.x-22, hive.y+38);
+
+    // fuentes
+    for(let i=0;i<sources.length;i++){
+      const s = sources[i];
+      ctx.fillStyle = i===bestIdx ? "rgba(0,150,0,0.30)" : "rgba(0,150,0,0.15)";
+      ctx.beginPath(); ctx.arc(s.x,s.y,18+20*s.q,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle = i===bestIdx ? "rgba(0,110,0,0.9)" : "rgba(0,110,0,0.35)";
+      ctx.stroke();
+      ctx.fillStyle="#0b3"; ctx.fillText(`${s.name} q=${s.q.toFixed(2)}`, s.x-28, s.y-28);
+    }
+
+    // flechas de danza (últimos mensajes) desde colmena, decodificadas con el sol actual
+    const recent = memory.slice(-8);
+    for(const m of recent){
+      const thetaHat = wrap(m.thetaRel + sun); // decodificación
+      const len = 65 + m.qRep*60;
+      ctx.strokeStyle="rgba(180,0,180,0.45)";
+      ctx.beginPath();
+      ctx.moveTo(hive.x, hive.y);
+      ctx.lineTo(hive.x + len*Math.cos(thetaHat), hive.y + len*Math.sin(thetaHat));
+      ctx.stroke();
+    }
+
+    // abejas
+    ctx.fillStyle="rgba(255,170,0,0.9)";
+    for(const b of bees) ctx.fillRect(b.x-2,b.y-2,4,4);
+
+    ctx.fillStyle="#111";
+    ctx.fillText("Flechas moradas = danza decodificada (ángulo relativo al sol).", 12, 22);
+  }
+
+  function loop(){
+    for(let k=0;k<2;k++) step();
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  el("switch").onclick = () => {
+    // cambia cuál es la mejor fuente (adaptación)
+    sources[bestIdx].q = Math.max(0.35, sources[bestIdx].q - 0.35);
+    recomputeBest();
+  };
+  el("reset").onclick = init;
+
+  init();
   loop();
 })();
 </script>
