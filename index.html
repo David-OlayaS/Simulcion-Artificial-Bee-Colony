@@ -620,7 +620,7 @@
   body{font-family:Arial;margin:16px}
   .row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
   canvas{border:1px solid #333;border-radius:12px;background:#fff}
-  .panel{width:400px;border:1px solid #ddd;border-radius:12px;padding:14px}
+  .panel{width:420px;border:1px solid #ddd;border-radius:12px;padding:14px}
   label{display:block;margin-top:10px}
   .kpi{margin:6px 0}
   button{margin-top:10px;margin-right:8px}
@@ -632,14 +632,16 @@
 <div class="row">
   <canvas id="cv" width="820" height="520"></canvas>
   <div class="panel">
-    <div class="kpi"><b>Ahora sí funciona así:</b> Scouts exploran, descubren fuentes y generan danzas. Reclutas siguen la danza (con ruido).</div>
+    <div class="kpi"><b>Cómo funciona:</b> Scouts exploran, descubren fuentes y generan danzas. Reclutas siguen la danza (con ruido).</div>
 
     <label>Exploración (proporción scouts): <span id="eVal"></span>
-      <input id="explore" type="range" min="0" max="100" value="20">
+      <input id="explore" type="range" min="0" max="100" value="25">
     </label>
+
     <label>Ruido angular (danza): <span id="nVal"></span>
       <input id="noise" type="range" min="0" max="100" value="12">
     </label>
+
     <label>Mensajes falsos (mentira): <span id="lVal"></span>
       <input id="liar" type="range" min="0" max="100" value="5">
     </label>
@@ -648,8 +650,10 @@
     <button id="reset">Reset</button>
 
     <div class="kpi">Mejor fuente actual: <b><span id="best">A</span></b></div>
-    <div class="kpi">Visitas (últimos 5s) → A: <b><span id="va">0</span></b> B: <b><span id="vb">0</span></b> C: <b><span id="vc">0</span></b></div>
-    <div class="kpi">Proporción hacia mejor (últimos 5s): <b><span id="frac">0</span></b></div>
+    <div class="kpi">Visitas (últimos ~5s) → A: <b><span id="va">0</span></b> B: <b><span id="vb">0</span></b> C: <b><span id="vc">0</span></b></div>
+    <div class="kpi">Proporción hacia mejor (últimos ~5s): <b><span id="frac">0%</span></b></div>
+
+    <div class="kpi"><b>Tip rápido:</b> sube ruido a 0.80 y verás caer la proporción hacia la mejor fuente.</div>
   </div>
 </div>
 
@@ -669,14 +673,14 @@
     nVal.textContent = (noise.value/100).toFixed(2);
     lVal.textContent = (liar.value/100).toFixed(2);
   }
-  [explore, noise, liar].forEach(x=>x.addEventListener("input", sync));
+  [explore, noise, liar].forEach(x => x.addEventListener("input", sync));
 
-  // ---- Utilidades
+  // -------- utilidades
   function wrap(a){ return (a+Math.PI)%(2*Math.PI)-Math.PI; }
   function ang(dx,dy){ return Math.atan2(dy, dx); }
   function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 
-  // ---- Mundo
+  // -------- mundo
   const hive = {x: 410, y: 420};
   const hiveR = 22;
 
@@ -685,8 +689,7 @@
     {name:"B", x: 620, y: 210, q:0.70},
     {name:"C", x: 430, y: 120, q:0.55},
   ];
-  const sourceBaseR = 18;
-
+  const baseR = 18;
   let bestIdx = 0;
 
   function recomputeBest(){
@@ -697,88 +700,63 @@
     el("best").textContent = sources[bestIdx].name;
   }
 
-  // ---- Sol
+  // -------- sol
   let sun = -Math.PI/2;
   const sunSpeed = 0.006;
 
-  // ---- Memoria de danzas (solo desde scouts que encontraron)
-  // msg: {thetaRel, dist, qRep, t}
-  let dances = [];
-  const danceTTL = 240; // cuánto dura un mensaje
+  // -------- memoria de danzas (solo de scouts que encontraron)
+  let dances = []; // {thetaRel, dist, qRep, t}
+  const danceTTL = 240;
 
-  // ---- Abejas
-  let bees = [];
+  // -------- abejas
   const N = 220;
+  let bees = [];
 
-  // Ventana de conteo de visitas (últimos ~5s)
-  let winTicks = 0;
-  let winA=0, winB=0, winC=0;
+  // ventana visitas
+  let winTicks = 0, winA=0, winB=0, winC=0;
 
-  function reset(){
-    recomputeBest();
-    sun = -Math.PI/2;
-    dances = [];
-    bees = [];
-    winTicks = 0; winA=0; winB=0; winC=0;
+  // tiempo
+  let t = 0;
 
-    for(let i=0;i<N;i++){
-      bees.push({
-        x: hive.x + (Math.random()-0.5)*20,
-        y: hive.y + (Math.random()-0.5)*20,
-        role: "scout",       // scout o recruit (se asigna dinámicamente)
-        state: "go",         // go / ret / dance
-        tx: hive.x, ty: hive.y, // target point
-        carrying: -1,        // idx de fuente descubierta
-        danceMsg: null       // mensaje que sigue (recruit)
-      });
-    }
-    sync();
+  function scoutWander(b){
+    b.tx = clamp(b.tx + (Math.random()-0.5)*160, 20, cv.width-20);
+    b.ty = clamp(b.ty + (Math.random()-0.5)*160, 20, cv.height-20);
   }
 
-  // ---- Codificación danza (relativa al sol)
   function encodeDance(source, sunAngle){
     const dx = source.x - hive.x;
     const dy = source.y - hive.y;
     const theta = ang(dx,dy);
-    const d = Math.sqrt(dx*dx+dy*dy);
+    const d = Math.sqrt(dx*dx + dy*dy);
 
     let thetaRel = wrap(theta - sunAngle);
 
-    // ruido angular real (afecta rumbo)
-    const noiseMag = (noise.value/100) * 1.0; // hasta ~1 rad
+    // ruido angular (hasta ~1 rad)
+    const noiseMag = (noise.value/100) * 1.0;
     thetaRel = wrap(thetaRel + (Math.random()-0.5)*2*noiseMag);
 
-    // mentiras: ángulo random y calidad reportada baja
+    // mensaje falso
     let qRep = source.q;
     if(Math.random() < (liar.value/100)){
       thetaRel = wrap((Math.random()*2*Math.PI)-Math.PI);
       qRep = Math.max(0.05, source.q*0.30);
     }
-
     return {thetaRel, dist:d, qRep};
   }
 
-  // ---- Decodificación (recluta sigue un punto estimado)
   function decodeToPoint(msg, sunAngle){
     const thetaHat = wrap(msg.thetaRel + sunAngle);
-    const dHat = msg.dist; // podrías meter ruido de distancia si quieres
+    const dHat = msg.dist;
     return {
       x: hive.x + dHat*Math.cos(thetaHat),
       y: hive.y + dHat*Math.sin(thetaHat)
     };
   }
 
-  // ---- Scouts: movimiento tipo “búsqueda”
-  function scoutWander(b){
-    // paseo aleatorio con preferencia a cubrir espacio
-    b.tx = clamp(b.tx + (Math.random()-0.5)*120, 20, cv.width-20);
-    b.ty = clamp(b.ty + (Math.random()-0.5)*120, 20, cv.height-20);
-  }
-
-  // ---- Selección de danza para reclutas (atención)
   function pickDance(){
     if(dances.length===0) return null;
-    // score = calidad reportada / (1+edad)
+
+    // atención: score = qRep / (1 + edad)
     let sum = 0;
     const scores = dances.map(d => {
       const age = t - d.t;
@@ -786,6 +764,7 @@
       sum += s;
       return s;
     });
+
     let r = Math.random()*(sum+1e-9);
     for(let i=0;i<dances.length;i++){
       r -= scores[i];
@@ -794,8 +773,30 @@
     return dances[dances.length-1];
   }
 
-  // ---- Simulación
-  let t = 0;
+  function reset(){
+    t = 0;
+    sun = -Math.PI/2;
+    dances = [];
+    winTicks = 0; winA=0; winB=0; winC=0;
+    recomputeBest();
+
+    bees = [];
+    for(let i=0;i<N;i++){
+      const b = {
+        x: hive.x + (Math.random()-0.5)*20,
+        y: hive.y + (Math.random()-0.5)*20,
+        role: "scout",
+        state: "go",     // go / ret / dance
+        tx: hive.x, ty: hive.y,
+        carrying: -1,
+        danceMsg: null,
+        danceT: 0
+      };
+      scoutWander(b);
+      bees.push(b);
+    }
+    sync();
+  }
 
   function step(){
     t++;
@@ -804,41 +805,36 @@
     // limpiar danzas viejas
     dances = dances.filter(d => (t - d.t) <= danceTTL);
 
-    // asignar roles según slider (proporción scouts)
+    // número de scouts según slider
     const scoutFrac = explore.value/100;
     const nScouts = Math.floor(N * scoutFrac);
 
-    // Ventana visitas
+    // ventana ~5s
     winTicks++;
-    if(winTicks >= 300){ // ~5s a 60fps
+    if(winTicks >= 300){
       winTicks = 0;
       winA = winB = winC = 0;
     }
 
-    // mover abejas
     const speed = 2.4;
 
     for(let i=0;i<bees.length;i++){
       const b = bees[i];
       b.role = (i < nScouts) ? "scout" : "recruit";
 
-      // Definir targets según rol y estado
       if(b.role === "scout"){
-        // Scouts exploran hasta tocar una fuente
         if(b.state === "go"){
-          // si no tiene target, crear uno
           if(Math.random() < 0.04) scoutWander(b);
 
-          // mover hacia target
           const dx = b.tx - b.x, dy = b.ty - b.y;
           const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
           b.x += (dx/d)*speed + (Math.random()-0.5)*0.5;
           b.y += (dy/d)*speed + (Math.random()-0.5)*0.5;
 
-          // ¿descubrió una fuente?
+          // ¿tocó fuente?
           for(let si=0; si<sources.length; si++){
             const s = sources[si];
-            const rr = sourceBaseR + 20*s.q;
+            const rr = baseR + 20*s.q;
             const ddx = s.x - b.x, ddy = s.y - b.y;
             if(ddx*ddx + ddy*ddy < rr*rr){
               b.carrying = si;
@@ -847,26 +843,22 @@
               break;
             }
           }
-        }
-        else if(b.state === "ret"){
+        } else if(b.state === "ret"){
           const dx = hive.x - b.x, dy = hive.y - b.y;
           const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
           b.x += (dx/d)*speed + (Math.random()-0.5)*0.4;
           b.y += (dy/d)*speed + (Math.random()-0.5)*0.4;
 
-          // llegó a colmena -> baila (crea mensaje)
           const ddx = hive.x - b.x, ddy = hive.y - b.y;
           if(ddx*ddx + ddy*ddy < hiveR*hiveR && b.carrying >= 0){
             b.state = "dance";
             b.danceT = 0;
-            const s = sources[b.carrying];
-            const msg = encodeDance(s, sun);
+            const msg = encodeDance(sources[b.carrying], sun);
             dances.push({...msg, t});
           }
-        }
-        else if(b.state === "dance"){
+        } else {
+          // dance
           b.danceT++;
-          // se queda en colmena
           b.x += (Math.random()-0.5)*0.6;
           b.y += (Math.random()-0.5)*0.6;
           if(b.danceT > 20){
@@ -876,34 +868,30 @@
           }
         }
       } else {
-        // RECRUITS: siguen danzas
+        // recruit
         if(b.state === "go"){
-          // escoger danza ocasionalmente
-          if(b.danceMsg === null or Math.random() < 0.05){
+          if(b.danceMsg === null || Math.random() < 0.05){
             b.danceMsg = pickDance();
             if(b.danceMsg){
               const pt = decodeToPoint(b.danceMsg, sun);
               b.tx = clamp(pt.x, 20, cv.width-20);
               b.ty = clamp(pt.y, 20, cv.height-20);
             } else {
-              // sin danzas: explora local
               scoutWander(b);
             }
           }
 
-          // moverse
           const dx = b.tx - b.x, dy = b.ty - b.y;
           const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
           b.x += (dx/d)*speed + (Math.random()-0.5)*0.5;
           b.y += (dy/d)*speed + (Math.random()-0.5)*0.5;
 
-          // si llega cerca de una fuente -> cuenta visita y vuelve
+          // ¿llegó a fuente?
           for(let si=0; si<sources.length; si++){
             const s = sources[si];
-            const rr = sourceBaseR + 20*s.q;
+            const rr = baseR + 20*s.q;
             const ddx = s.x - b.x, ddy = s.y - b.y;
             if(ddx*ddx + ddy*ddy < rr*rr){
-              // cuenta visita (ventana)
               if(si===0) winA++;
               if(si===1) winB++;
               if(si===2) winC++;
@@ -913,11 +901,12 @@
             }
           }
         } else {
-          // regresar a colmena
+          // return
           const dx = hive.x - b.x, dy = hive.y - b.y;
           const d = Math.sqrt(dx*dx+dy*dy)+1e-6;
           b.x += (dx/d)*speed + (Math.random()-0.5)*0.4;
           b.y += (dy/d)*speed + (Math.random()-0.5)*0.4;
+
           const ddx = hive.x - b.x, ddy = hive.y - b.y;
           if(ddx*ddx + ddy*ddy < hiveR*hiveR){
             b.state = "go";
@@ -930,16 +919,15 @@
       b.y = clamp(b.y, 0, cv.height);
     }
 
-    // KPIs panel
+    // panel KPI
     el("va").textContent = winA;
     el("vb").textContent = winB;
     el("vc").textContent = winC;
-    const bestVisits = (bestIdx===0?winA:bestIdx===1?winB:winC);
+    const bestVisits = (bestIdx===0?winA:(bestIdx===1?winB:winC));
     const total = winA+winB+winC+1e-9;
     el("frac").textContent = (bestVisits/total*100).toFixed(1) + "%";
   }
 
-  // ---- Dibujo
   function draw(){
     ctx.clearRect(0,0,cv.width,cv.height);
 
@@ -948,32 +936,35 @@
     ctx.fillStyle="#ffcc00";
     ctx.beginPath(); ctx.arc(sunPos.x,sunPos.y,18,0,Math.PI*2); ctx.fill();
     ctx.strokeStyle="#aa8800"; ctx.stroke();
-    ctx.strokeStyle="#aa8800";
     ctx.beginPath();
     ctx.moveTo(sunPos.x, sunPos.y);
     ctx.lineTo(sunPos.x + 40*Math.cos(sun), sunPos.y + 40*Math.sin(sun));
     ctx.stroke();
-    ctx.fillStyle="#111"; ctx.fillText("Sol (referencia)", 20, 105);
+
+    ctx.fillStyle="#111";
+    ctx.fillText("Sol (referencia)", 20, 105);
 
     // colmena
     ctx.fillStyle="rgba(255,200,120,0.35)";
     ctx.beginPath(); ctx.arc(hive.x,hive.y,hiveR,0,Math.PI*2); ctx.fill();
     ctx.strokeStyle="rgba(120,80,0,0.8)"; ctx.stroke();
-    ctx.fillStyle="#6b4b00"; ctx.fillText("Colmena", hive.x-22, hive.y+38);
+    ctx.fillStyle="#6b4b00";
+    ctx.fillText("Colmena", hive.x-22, hive.y+38);
 
     // fuentes
     for(let i=0;i<sources.length;i++){
       const s = sources[i];
-      const rr = sourceBaseR + 20*s.q;
+      const rr = baseR + 20*s.q;
       ctx.fillStyle = i===bestIdx ? "rgba(0,150,0,0.30)" : "rgba(0,150,0,0.15)";
       ctx.beginPath(); ctx.arc(s.x,s.y,rr,0,Math.PI*2); ctx.fill();
       ctx.strokeStyle = i===bestIdx ? "rgba(0,110,0,0.9)" : "rgba(0,110,0,0.35)";
       ctx.stroke();
-      ctx.fillStyle="#0b3"; ctx.fillText(`${s.name} q=${s.q.toFixed(2)}`, s.x-28, s.y-rr-8);
+      ctx.fillStyle="#0b3";
+      ctx.fillText(`${s.name} q=${s.q.toFixed(2)}`, s.x-28, s.y-rr-8);
     }
 
-    // flechas de danza decodificadas (últimas)
-    const recent = dances.slice(-8);
+    // flechas (danzas)
+    const recent = dances.slice(-10);
     for(const d of recent){
       const thetaHat = wrap(d.thetaRel + sun);
       const len = 65 + d.qRep*60;
@@ -991,7 +982,7 @@
     }
 
     ctx.fillStyle="#111";
-    ctx.fillText("Ahora: scouts descubren fuentes -> bailan -> reclutas siguen danza (con ruido).", 12, 22);
+    ctx.fillText("Scouts exploran → si encuentran fuente, bailan → reclutas siguen danza (ruido afecta).", 12, 22);
   }
 
   function loop(){
@@ -1000,18 +991,17 @@
     requestAnimationFrame(loop);
   }
 
-  // ---- Botones
+  // Botones
   el("switch").onclick = () => {
-    // cambia mejor fuente: baja q de la actual y sube otra
     sources[bestIdx].q = Math.max(0.35, sources[bestIdx].q - 0.35);
     recomputeBest();
   };
   el("reset").onclick = reset;
 
+  // start
   reset();
   loop();
 })();
 </script>
 </body>
 </html>
-
